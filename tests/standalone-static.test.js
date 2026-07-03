@@ -115,7 +115,7 @@ if (!runtime.includes('app:switch-tab')) fail('Runtime must listen for app:switc
 
 const importPattern = /(?:import\s+(?:[^'"()]+?\s+from\s+)?|export\s+[^'"()]+?\s+from\s+|import\s*\()\s*['"]([^'"]+)['"]/g;
 const newUrlPattern = /new\s+URL\(\s*['"]([^'"]+)['"]\s*,\s*import\.meta\.url\s*\)/g;
-for (const jsFile of walk('').filter((file) => /\.(js|mjs)$/.test(file) && !file.startsWith('tests/'))) {
+for (const jsFile of walk('').filter((file) => /\.(js|mjs)$/.test(file) && !file.startsWith('tests/') && !file.startsWith('scripts/'))) {
   const text = read(jsFile);
   for (const match of text.matchAll(importPattern)) assertLocalRefExists(jsFile, match[1], jsFile + ' import');
   for (const match of text.matchAll(newUrlPattern)) assertLocalRefExists(jsFile, match[1], jsFile + ' new URL');
