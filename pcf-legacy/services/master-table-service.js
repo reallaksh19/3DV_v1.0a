@@ -8,7 +8,7 @@ import {
 let staticWeightRows = [];
 const staticWeightRowsPromise = (async () => {
   try {
-    const response = await fetch(new URL('../../Docs/Masters/wtValveweights.json', import.meta.url));
+    const response = await fetch(new URL('../../docs/Masters/wtValveweights.json', import.meta.url));
     if (response.ok) staticWeightRows = await response.json();
   } catch {
     staticWeightRows = [];
