@@ -90,6 +90,7 @@ function walk(dirRel) {
 }
 
 const index = read('index.html');
+if (!fs.existsSync(path.join(root, '.nojekyll'))) fail('Published site root must include .nojekyll for GitHub Pages static deployment');
 const moduleScripts = [...index.matchAll(/<script\s+[^>]*type=["']module["'][^>]*src=["']([^"']+)["'][^>]*>/g)].map((match) => match[1]);
 if (moduleScripts.length !== 1) fail('Expected one module script, found ' + moduleScripts.length);
 assertLocalRefExists('index.html', moduleScripts[0], 'index module script');
