@@ -17,6 +17,42 @@ import { disposeStagePreviewTags } from './StagePreviewTagTools.js';
 
 const SUPPORTED_RENDER_KINDS = ['CYLINDER', 'BOX', 'ELBOW', 'FACET_GROUP', 'UNKNOWN_DIAGNOSTIC', 'hidden'];
 
+export function setStagePreviewExplode(rendererState, factor) {
+  if (!rendererState || rendererState.disposed) return;
+  rendererState.explodeFactor = factor;
+  applyExplode(rendererState);
+  draw(rendererState);
+}
+
+export function setStagePreviewProjection(rendererState, mode) {
+  if (!rendererState || rendererState.disposed) return;
+  rendererState.projectionMode = mode === 'orthographic' ? 'orthographic' : 'perspective';
+  const controls = rendererState.cameraControls;
+  if (mode === 'orthographic') {
+    const r = controls?.radius || 10;
+    const aspect = rendererState.camera.aspect || 1;
+    rendererState.orthoCamera.left   = -r * aspect;
+    rendererState.orthoCamera.right  =  r * aspect;
+    rendererState.orthoCamera.top    =  r;
+    rendererState.orthoCamera.bottom = -r;
+    rendererState.orthoCamera.position.copy(rendererState.perspCamera.position);
+    rendererState.orthoCamera.quaternion.copy(rendererState.perspCamera.quaternion);
+    rendererState.orthoCamera.updateProjectionMatrix();
+    rendererState.camera = rendererState.orthoCamera;
+  } else {
+    rendererState.camera = rendererState.perspCamera;
+  }
+  draw(rendererState);
+  rendererState.onCameraUpdate?.(rendererState.camera);
+}
+
+export function setStagePreviewColorBy(rendererState, colorBy) {
+  if (!rendererState || rendererState.disposed) return;
+  if (rendererState.colorBy === colorBy) return;
+  rendererState.colorBy = colorBy;
+  renderStagePreview(rendererState, rendererState.lastModel, rendererState.lastRenderPlan);
+}
+
 export function createStageThreePreviewRenderer(canvasHost) {
   canvasHost.querySelector('.json-viewer-webgl-canvas')?.remove();
   const scene = new THREE.Scene();
@@ -77,13 +113,14 @@ export function renderStagePreview(rendererState, model, renderPlan) {
 
   const primitiveById = new Map((model.primitives || []).map((primitive) => [primitive.id, primitive]));
   const visibleBboxes = [];
-  for (const entry of renderPlan.entries || []) addRenderEntry(rendererState, entry, primitiveById, visibleBboxes);
+  for (const entry of renderPlan.entries || []) addRenderEntry(rendererState, entry, primitiveById, visibleBboxes, rendererState.colorBy || 'default');
   rendererState.currentBbox = mergeBboxes(visibleBboxes) || modelBbox(model);
   rendererState.lastModel = model;
   rendererState.lastRenderPlan = renderPlan;
   updateStagePreviewSelection(rendererState, model);
   if (rendererState.forceFit || !rendererState.cameraControls?.initialized) fitStagePreviewCamera(rendererState, rendererState.currentBbox);
   rendererState.forceFit = false;
+  applyExplode(rendererState);
   draw(rendererState);
 }
 
@@ -151,8 +188,12 @@ export function disposeStageThreePreviewRenderer(rendererState) {
 }
 
 function createState(canvasHost, scene, camera, renderer, rootGroup, selectionGroup) {
+  const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100000);
   return {
     canvasHost, scene, camera, renderer, rootGroup, selectionGroup,
+    perspCamera: camera,
+    orthoCamera,
+    projectionMode: 'perspective',
     selectedRef: null,
     selectedRefs: [],
     selectionCallback: null,
@@ -171,10 +212,11 @@ function createState(canvasHost, scene, camera, renderer, rootGroup, selectionGr
   };
 }
 
-function addRenderEntry(state, entry, primitiveById, visibleBboxes) {
+function addRenderEntry(state, entry, primitiveById, visibleBboxes, colorBy) {
   if (entry.output === 'hidden') return;
-  const object = createPreviewObject(entry, primitiveById.get(entry.primitiveId));
+  const object = createPreviewObject(entry, primitiveById.get(entry.primitiveId), colorBy);
   if (!object) return;
+  object.userData.originalPosition = object.position.clone();
   object.userData.renderEntryId = entry.id;
   object.userData.stageRenderEntryId = entry.id;
   object.userData.primitiveId = entry.primitiveId || '';
@@ -220,14 +262,57 @@ function mergeBboxes(bboxes) {
 function resizeStagePreview(state) {
   const width = Math.max(state.canvasHost.clientWidth || 1, 1);
   const height = Math.max(state.canvasHost.clientHeight || 1, 1);
-  state.camera.aspect = width / height;
-  state.camera.updateProjectionMatrix();
+  const aspect = width / height;
+  state.perspCamera.aspect = aspect;
+  state.perspCamera.updateProjectionMatrix();
+  if (state.projectionMode === 'orthographic') {
+    const r = state.cameraControls?.radius || 10;
+    state.orthoCamera.left   = -r * aspect;
+    state.orthoCamera.right  =  r * aspect;
+    state.orthoCamera.top    =  r;
+    state.orthoCamera.bottom = -r;
+    state.orthoCamera.updateProjectionMatrix();
+  }
   state.renderer.setSize(width, height, false);
   draw(state);
 }
 
 function draw(state) {
   state.renderer.render(state.scene, state.camera);
+}
+
+function applyExplode(state) {
+  const factor = state.explodeFactor || 0;
+  const axis = state.explodeAxis || 'radial';
+  if (!state.currentBbox) return;
+  const center = new THREE.Vector3(
+    (state.currentBbox[0] + state.currentBbox[3]) / 2,
+    (state.currentBbox[1] + state.currentBbox[4]) / 2,
+    (state.currentBbox[2] + state.currentBbox[5]) / 2,
+  );
+  
+  const bboxSize = new THREE.Vector3(
+    state.currentBbox[3] - state.currentBbox[0],
+    state.currentBbox[4] - state.currentBbox[1],
+    state.currentBbox[5] - state.currentBbox[2],
+  );
+  const explodeScale = Math.max(bboxSize.length() / 4, 1);
+
+  state.rootGroup.children.forEach(obj => {
+    if (obj.userData.originalPosition) {
+      if (factor === 0) {
+        obj.position.copy(obj.userData.originalPosition);
+      } else {
+        const dir = new THREE.Vector3().subVectors(obj.userData.originalPosition, center);
+        if (axis === 'x') { dir.y = 0; dir.z = 0; }
+        else if (axis === 'y') { dir.x = 0; dir.z = 0; }
+        else if (axis === 'z') { dir.x = 0; dir.y = 0; }
+        
+        if (dir.lengthSq() < 1e-10) return;
+        obj.position.copy(obj.userData.originalPosition).addScaledVector(dir.normalize(), factor * 0.01 * explodeScale);
+      }
+    }
+  });
 }
 
 function createObjectIndex() {

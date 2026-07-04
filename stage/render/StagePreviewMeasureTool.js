@@ -7,8 +7,13 @@ export function attachStagePreviewMeasureTool(rendererState, onReadout) {
   group.name = 'STAGE_PREVIEW_MEASURE_GROUP';
   rendererState.scene.add(group);
   const tool = { active: false, points: [], group, onReadout };
-  tool.onClick = (event) => { if (!tool.active) return; const hit = pickPoint(rendererState, event.clientX, event.clientY); if (hit) addPoint(rendererState, tool, hit); };
-  canvas.addEventListener('click', tool.onClick);
+  tool.onClick = (event) => {
+    if (!tool.active) return;
+    event.stopPropagation();
+    const hit = pickPoint(rendererState, event.clientX, event.clientY);
+    if (hit) addPoint(rendererState, tool, hit);
+  };
+  canvas.addEventListener('pointerup', tool.onClick);
   rendererState.measureTool = tool;
   return tool;
 }
@@ -23,7 +28,7 @@ export function setStagePreviewMeasureActive(rendererState, active) {
 export function detachStagePreviewMeasureTool(rendererState) {
   const tool = rendererState?.measureTool;
   if (!tool) return;
-  rendererState.renderer.domElement.removeEventListener('click', tool.onClick);
+  rendererState.renderer.domElement.removeEventListener('pointerup', tool.onClick);
   clearMeasure(rendererState, tool);
   rendererState.scene.remove(tool.group);
   rendererState.measureTool = null;
@@ -54,7 +59,7 @@ function addPoint(rendererState, tool, point) {
 }
 
 function addMarker(tool, point, rendererState) {
-  const radius = Math.max((rendererState.cameraControls?.radius || 10) * 0.012, 0.01);
+  const radius = Math.max((rendererState.cameraControls?.radius || 10) * 0.004, 0.05);
   const marker = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 8), new THREE.MeshBasicMaterial({ color: 0xfbbf24, depthTest: false }));
   marker.position.copy(point);
   marker.renderOrder = 50;

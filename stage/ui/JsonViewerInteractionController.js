@@ -18,6 +18,13 @@ const CLIP_ACTIONS = new Set(['clip-box-selection', 'clip-box-model', 'clip-plan
 
 export function createJsonViewerInteractionController(handles, state, api) {
   const onToolbarClick = (event) => {
+    const explodeBtn = event.target?.closest?.('[data-explode-axis]');
+    if (explodeBtn) {
+       const axis = explodeBtn.dataset.explodeAxis;
+       handles.explodeAxisGroup.querySelectorAll('button').forEach(b => b.classList.toggle('is-active', b.dataset.explodeAxis === axis));
+       api.setExplodeAxis(axis);
+       return;
+    }
     const action = event.target?.closest?.('[data-action]')?.dataset?.action; if (!action) return;
     if (action === 'open-stage-json') return handles.fileInput.click();
     if (action === 'open-rvm') return handles.rvmFileInput.click();
@@ -33,17 +40,83 @@ export function createJsonViewerInteractionController(handles, state, api) {
     if (applyVisibilityAction(action, state, api)) return;
     if (CLIP_ACTIONS.has(action)) return applyClipAction(action, state, api);
     if (handleTagAction(action, handles, state, api)) return;
+    if (action.startsWith('multi-select-')) {
+      const mode = action.replace('multi-select-', '');
+      if (mode === 'all') {
+        const visibleCheckboxes = Array.from(handles.hierarchyList.querySelectorAll('.json-viewer-tree-checkbox')).filter(cb => cb.closest('.json-viewer-tree-item').style.display !== 'none');
+        state.selectedKeys = new Set(visibleCheckboxes.map(cb => `${cb.dataset.checkType}:${cb.dataset.checkId}`));
+      } else if (mode === 'clear') {
+        state.selectedKeys = new Set();
+      } else if (mode === 'hide') {
+        if (!state.selectedKeys?.size) return;
+        state.selectedKeys.forEach(key => {
+          const [type, id] = key.split(':');
+          state.visibility = createNextVisibilityState(state.visibility, 'hide', { type, id });
+        });
+      } else if (mode === 'show') {
+        if (!state.selectedKeys?.size) return;
+        state.selectedKeys.forEach(key => {
+          const [type, id] = key.split(':');
+          state.visibility = createNextVisibilityState(state.visibility, 'unhide', { type, id });
+        });
+      } else if (mode === 'fit') {
+        if (!state.selectedKeys?.size) return;
+        const refs = Array.from(state.selectedKeys).map(key => { const [type, id] = key.split(':'); return { type, id }; });
+        api.applyPreviewSelection(refs);
+        return api.runPreviewCommand('fit-selection');
+      }
+      api.syncPreviewTools(); api.renderSidePanels(); return;
+    }
+    if (action === 'apply-quality') {
+      const q = handles.qualityOverrideSelect.value;
+      if (q === 'hidden') {
+        if (!state.selectedKeys?.size) return;
+        state.selectedKeys.forEach(key => {
+          const [type, id] = key.split(':');
+          state.visibility = createNextVisibilityState(state.visibility, 'hide', { type, id });
+        });
+        api.syncPreviewTools(); api.renderSidePanels();
+      } else {
+        if (!state.selectedKeys?.size) return;
+        state.selectedKeys.forEach(key => {
+          const [type, id] = key.split(':');
+          state.qualityOverrides = state.qualityOverrides || {};
+          state.qualityOverrides[`${type}:${id}`] = q;
+        });
+        api.applyQualityOverrides();
+      }
+      return;
+    }
+    if (action === 'toggle-drawer') {
+      const drawer = handles.bottomDrawer;
+      const isCollapsed = drawer.classList.contains('is-collapsed');
+      drawer.classList.toggle('is-collapsed', !isCollapsed);
+      event.target.innerHTML = isCollapsed ? '▼' : '▲';
+      return;
+    }
+    if (action === 'search-open') return api.openSearch();
+    if (action === 'search-reindex') return api.reindexSearch();
     if (action === 'fit' || action === 'reset' || action === 'fit-selection') return api.runPreviewCommand(action);
     if (TOOL_ACTIONS[action]) return api.setActiveTool(action);
     if (action === 'tool-box-select') return api.toggleBoxSelect();
     if (action === 'tool-marquee') return api.toggleMarquee();
     if (action === 'tool-measure') return api.toggleMeasure();
+    if (action === 'toggle-ortho') return api.toggleOrtho();
     if (VIEW_ACTIONS[action]) return api.applyViewPreset(action);
+    if (action === 'view-prev') return api.stepViewHistory('prev');
+    if (action === 'view-next') return api.stepViewHistory('next');
+    if (action === 'explode-reset') return api.resetExplode();
+  };
+  const onNavInput = (event) => {
+    if (event.target.dataset.action === 'explode-factor') {
+      api.setExplode(event.target.value / 100);
+    }
   };
   const onFileChange = (event) => { const file = event.target.files?.[0]; if (file) api.loadStageFile(file); };
   const onRvmFileChange = (event) => { const file = event.target.files?.[0]; if (file) api.loadRvmFile(file); };
   const onTagFileChange = (event) => { const file = event.target.files?.[0]; if (file) importTagsFile(file, handles, state, api); handles.tagFileInput.value = ''; };
   const onQualityChange = () => api.changeQuality(handles.qualitySelect.value);
+  const onColorByChange = () => api.changeColorBy(handles.colorBySelect.value);
   const onTreeClick = (event) => {
     const toggle = event.target.closest?.('[data-visibility-toggle-type]');
     if (toggle) return toggleObjectVisibility(state, { type: toggle.dataset.visibilityToggleType, id: toggle.dataset.visibilityToggleId }, api);
@@ -52,6 +125,46 @@ export function createJsonViewerInteractionController(handles, state, api) {
     const row = event.target.closest?.('[data-ref-type][data-ref-id]'); if (!row) return;
     api.applyPreviewSelection({ type: row.dataset.refType, id: row.dataset.refId });
     if (state.previewRenderer) fitStagePreviewToSelection(state.previewRenderer, state.model, state.selectedRef);
+  };
+  const onTreeChange = (event) => {
+    const cb = event.target.closest('.json-viewer-tree-checkbox'); if (!cb) return;
+    const type = cb.dataset.checkType; const id = cb.dataset.checkId; const key = `${type}:${id}`;
+    if (!state.selectedKeys) state.selectedKeys = new Set();
+    const isChecked = cb.checked;
+    
+    // Cascading logic to children
+    const item = cb.closest('.json-viewer-tree-item');
+    if (item) {
+      const depth = parseInt(item.style.getPropertyValue('--json-tree-depth')) || 0;
+      const checkboxes = [cb];
+      let next = item.nextElementSibling;
+      while (next) {
+        const nextDepth = parseInt(next.style.getPropertyValue('--json-tree-depth')) || 0;
+        if (nextDepth <= depth) break;
+        const nextCb = next.querySelector('.json-viewer-tree-checkbox');
+        if (nextCb) checkboxes.push(nextCb);
+        next = next.nextElementSibling;
+      }
+      for (const box of checkboxes) {
+        const k = `${box.dataset.checkType}:${box.dataset.checkId}`;
+        if (isChecked) state.selectedKeys.add(k);
+        else state.selectedKeys.delete(k);
+      }
+    } else {
+      if (isChecked) state.selectedKeys.add(key);
+      else state.selectedKeys.delete(key);
+    }
+    state.selectedRefs = Array.from(state.selectedKeys).map(k => { const [type, id] = k.split(':'); return { type, id }; });
+    state.selectedRef = state.selectedRefs[0] || null;
+    if (state.previewRenderer) {
+      state.previewRenderer.selectedRefs = state.selectedRefs;
+      state.previewRenderer.selectedRef = state.selectedRef;
+      // We assume updateStagePreviewSelection is called, but we can call api.applyPreviewSelection instead of manual sync.
+    }
+    // Actually, calling api.applyPreviewSelection will reset selectedKeys because we haven't updated it yet.
+    // Let's just update renderer selection manually or we should change applyPreviewSelection to accept Set.
+    // I will call api.applyPreviewSelection with the array.
+    api.applyPreviewSelection(state.selectedRefs);
   };
   const onTreeFilter = () => {
     const query = handles.treeFilterInput.value.trim().toLowerCase();
@@ -62,8 +175,11 @@ export function createJsonViewerInteractionController(handles, state, api) {
     if (filter) { state.componentFilter = filter; api.renderSidePanels(); }
     const tab = event.target?.closest?.('[data-enrich-tab]')?.dataset?.enrichTab;
     if (tab) { state.enrichment.activeTab = tab; api.renderSidePanels(); return; }
+    // Only route actions that are NOT inside the toolbar or navRow (those already have dedicated listeners)
+    // This routes viewcube, panel-collapse, enrichment panel and other canvas-area buttons
+    if (event.target?.closest?.('.json-viewer-toolbar') || event.target?.closest?.('.json-viewer-command-ribbon')) return;
     const action = event.target?.closest?.('[data-action]')?.dataset?.action;
-    if (action && (event.target.closest('.json-viewer-enrichment-panel') || event.target.closest('.json-viewer-panel-collapse'))) onToolbarClick(event);
+    if (action) onToolbarClick(event);
   };
   const onShellInput = (event) => {
     const input = event.target?.closest?.('[data-enrich-input]'); if (!input) return;
@@ -82,7 +198,13 @@ export function createJsonViewerInteractionController(handles, state, api) {
   };
   const onRightClick = (event) => {
     const panel = event.target?.dataset?.panel; if (panel) return setPanel(panel, api);
-    const axis = event.target?.closest?.('[data-clip-axis]')?.dataset?.clipAxis; if (axis) { state.clip = createNextClipState(state.clip, 'axis', { value: axis }); return applyClipAction('clip-plane', state, api); }
+    const axis = event.target?.closest?.('[data-clip-axis]')?.dataset?.clipAxis; 
+    if (axis) { 
+      state.clip = createNextClipState(state.clip, 'axis', { value: axis }); 
+      if (state.clip.mode === 'plane') applyClipAction('clip-plane', state, api);
+      else api.syncPreviewTools();
+      return;
+    }
     const focusId = event.target?.closest?.('[data-tag-focus]')?.dataset?.tagFocus; if (focusId) return focusTag(focusId, state, api);
     const toggleId = event.target?.closest?.('[data-tag-toggle]')?.dataset?.tagToggle; if (toggleId) return toggleTagVisibility(toggleId, state, api);
     const deleteId = event.target?.closest?.('[data-tag-delete]')?.dataset?.tagDelete; if (deleteId) return deleteTag(deleteId, state, api);
@@ -97,16 +219,16 @@ export function createJsonViewerInteractionController(handles, state, api) {
   const onDragOver = (event) => event.preventDefault();
   const onKeyDown = (event) => { if (event.key === 'Escape') api.cancelActiveModes(); if (event.ctrlKey && event.key.toLowerCase() === 'z') api.restoreHistory('undo'); if (event.ctrlKey && event.key.toLowerCase() === 'y') api.restoreHistory('redo'); };
   const onShellPointerDown = (event) => startPanelResize(event, handles);
-  return { wireEvents: () => wire(handles, { onToolbarClick, onFileChange, onRvmFileChange, onTagFileChange, onQualityChange, onTreeClick, onTreeFilter, onShellClick, onShellInput, onShellChange, onShellPointerDown, onHiddenClick, onRightClick, onRightInput, onRightSubmit, onDrop, onDragOver, onKeyDown }), handleTagCanvasClick: (hit) => handleTagCanvasClick(hit, state, api) };
+  return { wireEvents: () => wire(handles, { onToolbarClick, onNavInput, onFileChange, onRvmFileChange, onTagFileChange, onQualityChange, onColorByChange, onTreeClick, onTreeChange, onTreeFilter, onShellClick, onShellInput, onShellChange, onShellPointerDown, onHiddenClick, onRightClick, onRightInput, onRightSubmit, onDrop, onDragOver, onKeyDown }), handleTagCanvasClick: (hit) => handleTagCanvasClick(hit, state, api) };
 }
 
 function wire(handles, events) {
-  handles.toolbar.addEventListener('click', events.onToolbarClick); handles.navRow.addEventListener('click', events.onToolbarClick); handles.fileInput.addEventListener('change', events.onFileChange); handles.rvmFileInput.addEventListener('change', events.onRvmFileChange); handles.tagFileInput.addEventListener('change', events.onTagFileChange); handles.qualitySelect.addEventListener('change', events.onQualityChange); handles.hierarchyList.addEventListener('click', events.onTreeClick); handles.hiddenList.addEventListener('click', events.onHiddenClick); handles.treeFilterInput.addEventListener('input', events.onTreeFilter); handles.shell.addEventListener('click', events.onShellClick); handles.shell.addEventListener('input', events.onShellInput); handles.shell.addEventListener('change', events.onShellChange); handles.shell.addEventListener('pointerdown', events.onShellPointerDown); handles.rightPanel.addEventListener('click', events.onRightClick); handles.rightPanel.addEventListener('input', events.onRightInput); handles.rightPanel.addEventListener('change', events.onRightInput); handles.rightPanel.addEventListener('submit', events.onRightSubmit); handles.shell.addEventListener('drop', events.onDrop); handles.shell.addEventListener('dragover', events.onDragOver); document.addEventListener('keydown', events.onKeyDown);
-  return () => { handles.toolbar.removeEventListener('click', events.onToolbarClick); handles.navRow.removeEventListener('click', events.onToolbarClick); handles.fileInput.removeEventListener('change', events.onFileChange); handles.rvmFileInput.removeEventListener('change', events.onRvmFileChange); handles.tagFileInput.removeEventListener('change', events.onTagFileChange); handles.qualitySelect.removeEventListener('change', events.onQualityChange); handles.hierarchyList.removeEventListener('click', events.onTreeClick); handles.hiddenList.removeEventListener('click', events.onHiddenClick); handles.treeFilterInput.removeEventListener('input', events.onTreeFilter); handles.shell.removeEventListener('click', events.onShellClick); handles.shell.removeEventListener('input', events.onShellInput); handles.shell.removeEventListener('change', events.onShellChange); handles.shell.removeEventListener('pointerdown', events.onShellPointerDown); handles.rightPanel.removeEventListener('click', events.onRightClick); handles.rightPanel.removeEventListener('input', events.onRightInput); handles.rightPanel.removeEventListener('change', events.onRightInput); handles.rightPanel.removeEventListener('submit', events.onRightSubmit); handles.shell.removeEventListener('drop', events.onDrop); handles.shell.removeEventListener('dragover', events.onDragOver); document.removeEventListener('keydown', events.onKeyDown); };
+  handles.toolbar.addEventListener('click', events.onToolbarClick); handles.navRow.addEventListener('click', events.onToolbarClick); handles.navRow.addEventListener('input', events.onNavInput); handles.fileInput.addEventListener('change', events.onFileChange); handles.rvmFileInput.addEventListener('change', events.onRvmFileChange); handles.tagFileInput.addEventListener('change', events.onTagFileChange); handles.qualitySelect.addEventListener('change', events.onQualityChange); handles.colorBySelect?.addEventListener('change', events.onColorByChange); handles.hierarchyList.addEventListener('click', events.onTreeClick); handles.hierarchyList.addEventListener('change', events.onTreeChange); handles.hiddenList.addEventListener('click', events.onHiddenClick); handles.treeFilterInput.addEventListener('input', events.onTreeFilter); handles.shell.addEventListener('click', events.onShellClick); handles.shell.addEventListener('input', events.onShellInput); handles.shell.addEventListener('change', events.onShellChange); handles.shell.addEventListener('pointerdown', events.onShellPointerDown); handles.rightPanel.addEventListener('click', events.onRightClick); handles.rightPanel.addEventListener('input', events.onRightInput); handles.rightPanel.addEventListener('change', events.onRightInput); handles.rightPanel.addEventListener('submit', events.onRightSubmit); handles.shell.addEventListener('drop', events.onDrop); handles.shell.addEventListener('dragover', events.onDragOver); document.addEventListener('keydown', events.onKeyDown);
+  return () => { handles.toolbar.removeEventListener('click', events.onToolbarClick); handles.navRow.removeEventListener('click', events.onToolbarClick); handles.navRow.removeEventListener('input', events.onNavInput); handles.fileInput.removeEventListener('change', events.onFileChange); handles.rvmFileInput.removeEventListener('change', events.onRvmFileChange); handles.tagFileInput.removeEventListener('change', events.onTagFileChange); handles.qualitySelect.removeEventListener('change', events.onQualityChange); handles.colorBySelect?.removeEventListener('change', events.onColorByChange); handles.hierarchyList.removeEventListener('click', events.onTreeClick); handles.hierarchyList.removeEventListener('change', events.onTreeChange); handles.hiddenList.removeEventListener('click', events.onHiddenClick); handles.treeFilterInput.removeEventListener('input', events.onTreeFilter); handles.shell.removeEventListener('click', events.onShellClick); handles.shell.removeEventListener('input', events.onShellInput); handles.shell.removeEventListener('change', events.onShellChange); handles.shell.removeEventListener('pointerdown', events.onShellPointerDown); handles.rightPanel.removeEventListener('click', events.onRightClick); handles.rightPanel.removeEventListener('input', events.onRightInput); handles.rightPanel.removeEventListener('change', events.onRightInput); handles.rightPanel.removeEventListener('submit', events.onRightSubmit); handles.shell.removeEventListener('drop', events.onDrop); handles.shell.removeEventListener('dragover', events.onDragOver); document.removeEventListener('keydown', events.onKeyDown); };
 }
 
 function setPanel(panel, api) { api.setPanel(panel); api.renderSidePanels(); }
-function clearSelection(state, api) { api.recordUndo(); state.selectedRef = null; state.selectedRefs = []; if (state.previewRenderer) { state.previewRenderer.selectedRef = null; state.previewRenderer.selectedRefs = []; updateStagePreviewSelection(state.previewRenderer, state.model); } state.statusText = 'Selection cleared'; api.renderSidePanels(); }
+function clearSelection(state, api) { api.recordUndo(); state.selectedRef = null; state.selectedRefs = []; state.selectedKeys = new Set(); if (state.previewRenderer) { state.previewRenderer.selectedRef = null; state.previewRenderer.selectedRefs = []; updateStagePreviewSelection(state.previewRenderer, state.model); } state.statusText = 'Selection cleared'; api.renderSidePanels(); }
 function applyVisibilityAction(action, state, api) { const command = VISIBILITY_ACTIONS[action]; if (!command) return false; if (!state.model) return status('Visibility: load a model first', state, api); if (command !== 'show-all' && !state.selectedRef) return status('Visibility: select a row or object first', state, api); api.recordUndo(); state.visibility = createNextVisibilityState(state.visibility, command, state.selectedRef); state.statusText = command === 'show-all' ? 'Visibility: show all' : `Visibility: ${command} ${state.selectedRef.type} ${state.selectedRef.id}`; api.syncPreviewTools(); api.renderSidePanels(); return true; }
 function toggleObjectVisibility(state, ref, api) { api.recordUndo(); const command = isRefHiddenByVisibility(ref, state.visibility) ? 'unhide' : 'hide'; state.visibility = createNextVisibilityState(state.visibility, command, ref); state.statusText = `${command === 'hide' ? 'Hidden' : 'Unhidden'} ${ref.type} ${ref.id}`; api.syncPreviewTools(); api.renderSidePanels(); }
 function applyClipAction(action, state, api) { api.recordUndo(); const command = action === 'clip-clear' ? 'clear' : action.replace('clip-', ''); state.clip = createNextClipState(state.clip, command, { rendererState: state.previewRenderer, model: state.model, selectedRef: state.selectedRef }); state.activePanel = 'clip'; state.statusText = state.clip.mode === 'off' ? 'Clip: off' : clipSummary(state.clip); api.syncPreviewTools(); api.renderSidePanels(); }
@@ -131,7 +253,10 @@ function handleEnrichmentAction(action, state, api) {
   if (action === 'enrich-open') state.enrichment.open = true;
   if (action === 'enrich-close') state.enrichment.open = false;
   if (action === 'enrich-fullscreen') state.enrichment.fullscreen = !state.enrichment.fullscreen;
-  if (action === 'enrich-run') state.enrichment.lastRun = new Date().toLocaleString();
+  if (action === 'enrich-run') {
+    state.enrichment.lastRun = new Date().toLocaleString();
+    if (api.applyEnrichment) api.applyEnrichment();
+  }
   if (action === 'enrich-export-config') exportEnrichmentConfig(state);
   api.renderSidePanels();
   return true;

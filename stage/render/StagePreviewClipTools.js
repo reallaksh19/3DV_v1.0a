@@ -42,13 +42,13 @@ export function applyStagePreviewClip(rendererState, clip) {
   const box = activeBox(rendererState, clip);
   if (clip?.mode === 'box' && box) {
     rendererState.renderer.clippingPlanes = planesForBox(box);
-    ensureClipGroup(rendererState).add(new THREE.Box3Helper(box, 0xfbbf24));
+    addClipHelper(rendererState, new THREE.Box3Helper(box, 0xfbbf24));
     return { active: true, summary: `Clip: ${clip.source}` };
   }
   if (clip?.mode === 'plane' && box) {
     const plane = planeForBox(box, validAxis(clip.axis), clampPercent(clip.percent), Boolean(clip.inverted));
     rendererState.renderer.clippingPlanes = [plane];
-    ensureClipGroup(rendererState).add(planeHelperForBox(box, plane, validAxis(clip.axis), clampPercent(clip.percent)));
+    addClipHelper(rendererState, planeHelperForBox(box, plane, validAxis(clip.axis), clampPercent(clip.percent)));
     return { active: true, summary: `Clip: ${validAxis(clip.axis).toUpperCase()} ${clampPercent(clip.percent)}%${clip.inverted ? ' inverted' : ''}` };
   }
   return { active: false, summary: 'Clip: off' };
@@ -72,6 +72,13 @@ function ensureClipGroup(rendererState) {
   rendererState.clipGroup.userData = { ignoreBounds: true, stageClipHelper: true };
   rendererState.scene.add(rendererState.clipGroup);
   return rendererState.clipGroup;
+}
+
+function addClipHelper(rendererState, helper) {
+  helper.traverse(obj => {
+    if (obj.material) obj.material.clippingPlanes = [];
+  });
+  ensureClipGroup(rendererState).add(helper);
 }
 
 function clearClipHelpers(rendererState) {
@@ -132,7 +139,7 @@ function planeForBox(box, axis, percent, inverted) {
   const max = box.max[axis];
   const cut = min + (max - min) * (percent / 100);
   const normal = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
-  if (inverted) normal.multiplyScalar(-1);
+  if (inverted) normal.negate();
   return new THREE.Plane(normal, inverted ? cut : -cut);
 }
 

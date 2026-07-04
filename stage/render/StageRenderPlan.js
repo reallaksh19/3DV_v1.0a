@@ -23,12 +23,12 @@ const NATIVE_GEOMETRY_RENDER_KINDS = Object.freeze(['CYLINDER', 'BOX', 'SPHERE']
 // (not just a component/assembly grouping) backs the entry.
 const PRIMITIVE_ONLY_NATIVE_RENDER_KINDS = Object.freeze(['TEE', RK_F]);
 
-export function buildStageRenderPlan(model, quality = 'full') {
-  return buildPlan(model, quality, { components: false, assemblies: false, diagnostics: [] });
+export function buildStageRenderPlan(model, quality = 'full', options = {}) {
+  return buildPlan(model, quality, { components: false, assemblies: false, diagnostics: [], qualityOverrides: options.qualityOverrides });
 }
 
 export function buildComponentAwareStageRenderPlan(model, quality = 'full', options = {}) {
-  return buildPlan(model, quality, { components: options.components !== false, assemblies: options.assemblies !== false, diagnostics: options.diagnostics || [] });
+  return buildPlan(model, quality, { components: options.components !== false, assemblies: options.assemblies !== false, diagnostics: options.diagnostics || [], qualityOverrides: options.qualityOverrides });
 }
 
 export function summarizeStageRenderPlan(plan) {
@@ -69,10 +69,12 @@ export function validateStageRenderPlan(plan) {
 function buildPlan(model, quality, options) {
   const normalizedQuality = normalizeRenderQuality(quality);
   const diagnostics = [...options.diagnostics];
+  const overrides = options.qualityOverrides || {};
+  const getQuality = (nodeId, componentId) => overrides[`component:${componentId}`] || overrides[`node:${nodeId}`] || normalizedQuality;
   const componentById = new Map((model?.components || []).map((component) => [component.id, component]));
-  const entries = (model?.primitives || []).map((primitive, index) => buildPrimitiveEntry(primitive, componentById.get(primitive.componentId), normalizedQuality, index, diagnostics));
-  if (options.components) entries.push(...buildComponentEntries(model, normalizedQuality, entries.length));
-  if (options.assemblies) entries.push(...buildAssemblyEntries(model, normalizedQuality, entries.length));
+  const entries = (model?.primitives || []).map((primitive, index) => buildPrimitiveEntry(primitive, componentById.get(primitive.componentId), getQuality(primitive.nodeId, primitive.componentId), index, diagnostics));
+  if (options.components) entries.push(...buildComponentEntries(model, quality, entries.length, overrides));
+  if (options.assemblies) entries.push(...buildAssemblyEntries(model, quality, entries.length, overrides));
   const plan = { schema: STAGE_RENDER_PLAN_SCHEMA, source: planSource(model, normalizedQuality), entries, summary: null, diagnostics };
   plan.summary = summarizeStageRenderPlan(plan);
   return plan;
@@ -89,19 +91,21 @@ function buildPrimitiveEntry(primitive, component, quality, index, diagnostics) 
   });
 }
 
-function buildComponentEntries(model, quality, offset) {
+function buildComponentEntries(model, quality, offset, overrides = {}) {
   return (model?.components || []).map((component, index) => {
     const renderKind = COMPONENT_KIND_BY_SEMANTIC[component?.semanticType];
     if (!renderKind) return null;
-    const classified = classifyStageRenderSupport({ component, renderKind, quality });
+    const q = overrides[`component:${component.id}`] || overrides[`node:${component.nodeId}`] || quality;
+    const classified = classifyStageRenderSupport({ component, renderKind, quality: q });
     return createComponentRenderPlanEntry({ id: renderId(offset + index + 1), sourceRef: { type: 'component', id: component.id }, nodeId: component.nodeId || '', componentId: component.id, primitiveId: '', renderKind, semanticType: component.semanticType || 'UNKNOWN', recipeId: `component-${renderKind.toLowerCase().replaceAll('_', '-')}-diagnostic`, bboxWorld: component.bboxWorld || null, ...classified });
   }).filter(Boolean);
 }
 
-function buildAssemblyEntries(model, quality, offset) {
+function buildAssemblyEntries(model, quality, offset, overrides = {}) {
   return (model?.assemblies || []).map((assembly, index) => {
     const renderKind = assembly.renderKind || 'UNKNOWN_DIAGNOSTIC';
-    return createAssemblyRenderPlanEntry({ id: renderId(offset + index + 1), sourceRef: { type: 'assembly', id: assembly.id }, nodeId: assembly.nodeId || '', componentId: '', primitiveId: '', renderKind, semanticType: assembly.semanticType || 'UNKNOWN', recipeId: `assembly-${renderKind.toLowerCase()}-diagnostic`, bboxWorld: assembly.bboxWorld || null, ...classifyStageRenderSupport({ ...assembly, renderKind, quality }) });
+    const q = overrides[`node:${assembly.nodeId}`] || quality;
+    return createAssemblyRenderPlanEntry({ id: renderId(offset + index + 1), sourceRef: { type: 'assembly', id: assembly.id }, nodeId: assembly.nodeId || '', componentId: '', primitiveId: '', renderKind, semanticType: assembly.semanticType || 'UNKNOWN', recipeId: `assembly-${renderKind.toLowerCase()}-diagnostic`, bboxWorld: assembly.bboxWorld || null, ...classifyStageRenderSupport({ ...assembly, renderKind, quality: q }) });
   });
 }
 

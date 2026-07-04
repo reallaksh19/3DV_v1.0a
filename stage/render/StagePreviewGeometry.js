@@ -10,42 +10,60 @@ const COLORS = {
 
 const RK_F = 'FLA' + 'NGE';
 
-export function createPreviewObject(entry, primitive) {
+export function resolveColorBy(entry, colorBy) {
+  if (!colorBy || colorBy === 'default') return null;
+  if (colorBy === 'componentType') {
+    const kind = (entry?.componentType || entry?.kind || 'UNKNOWN').toUpperCase();
+    const hash = Array.from(kind).reduce((a, b) => a + b.charCodeAt(0), 0);
+    const colors = [0xef4444, 0xf97316, 0xf59e0b, 0x84cc16, 0x22c55e, 0x10b981, 0x06b6d4, 0x3b82f6, 0x6366f1, 0x8b5cf6, 0xd946ef, 0xf43f5e];
+    return colors[hash % colors.length];
+  }
+  if (colorBy === 'renderKind') {
+    const kind = (entry?.renderKind || 'UNKNOWN').toUpperCase();
+    const hash = Array.from(kind).reduce((a, b) => a + b.charCodeAt(0), 0);
+    const colors = [0xfca5a5, 0xfcd34d, 0x86efac, 0x93c5fd, 0xc4b5fd, 0xf9a8d4];
+    return colors[hash % colors.length];
+  }
+  return null;
+}
+
+export function createPreviewObject(entry, primitive, colorBy = 'default') {
   if (!entry || entry.output === 'hidden') return null;
-  if (entry.diagnosticOnly || entry.renderKind === 'UNKNOWN_DIAGNOSTIC') return bboxWire(entry.bboxWorld, COLORS.diagnostic);
-  if (entry.renderKind === 'CYLINDER') return cylinderObject(entry, primitive);
-  if (entry.renderKind === 'BOX') return boxObject(entry, primitive);
-  if (entry.renderKind === 'SPHERE') return sphereObject(entry, primitive);
-  if (entry.renderKind === RK_F) return flangeObject(entry, primitive);
-  if (entry.renderKind === 'FACET_GROUP') return facetGroupObject(entry, primitive);
-  if (entry.renderKind === 'ELBOW') return elbowObject(entry, primitive);
-  return bboxWire(entry.bboxWorld, COLORS.diagnostic);
+  const resolvedColor = resolveColorBy(entry, colorBy);
+  if (entry.diagnosticOnly || entry.renderKind === 'UNKNOWN_DIAGNOSTIC') return bboxWire(entry.bboxWorld, resolvedColor || COLORS.diagnostic);
+  if (entry.renderKind === 'CYLINDER') return cylinderObject(entry, primitive, resolvedColor);
+  if (entry.renderKind === 'BOX') return boxObject(entry, primitive, resolvedColor);
+  if (entry.renderKind === 'SPHERE') return sphereObject(entry, primitive, resolvedColor);
+  if (entry.renderKind === RK_F) return flangeObject(entry, primitive, resolvedColor);
+  if (entry.renderKind === 'FACET_GROUP') return facetGroupObject(entry, primitive, resolvedColor);
+  if (entry.renderKind === 'ELBOW') return elbowObject(entry, primitive, resolvedColor);
+  return bboxWire(entry.bboxWorld, resolvedColor || COLORS.diagnostic);
 }
 
 export function createSelectionBox(bboxWorld) {
   return bboxWire(bboxWorld, COLORS.selection);
 }
 
-function cylinderObject(entry, primitive) {
+function cylinderObject(entry, primitive, colorOverride) {
   const bbox = entry.bboxWorld;
   const params = primitive?.nativeGeometry?.nativeParams || primitive?.nativeParams || primitive?.params || {};
   // ATT-derived schematic segment: endpoint-locked in world space.
   const segment = segmentEndpoints(params);
-  if (segment) return cylinderBetweenPoints(segment.start, segment.end, positive(params.radius) ? Number(params.radius) : 1);
+  if (segment) return cylinderBetweenPoints(segment.start, segment.end, positive(params.radius) ? Number(params.radius) : 1, colorOverride);
   // RVM native cylinder (code 8): build in the local frame from decoded params and place with the
   // native transform so rotation is preserved (bbox heuristics collapse tilted cylinders).
   const placement = placementMatrix(primitive);
   if (placement && positive(params.radius) && positive(params.height)) {
     const geometry = new THREE.CylinderGeometry(Number(params.radius), Number(params.radius), Number(params.height), 24, 1);
     orientGeometryToLocalAxis(geometry, params.localAxis);
-    return placedMesh(geometry, placement, COLORS.native);
+    return placedMesh(geometry, placement, colorOverride || COLORS.native);
   }
-  if (!isBbox(bbox)) return bboxWire(bbox, COLORS.diagnostic);
+  if (!isBbox(bbox)) return bboxWire(bbox, colorOverride || COLORS.diagnostic);
   const size = bboxSize(bbox);
   const axis = longestAxis(size);
   const length = Math.max(size[axis], 0.001);
   const radius = radiusForCylinder(primitive, size, axis);
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 24, 1), material(COLORS.native));
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 24, 1), material(colorOverride || COLORS.native));
   orientCylinder(mesh, axis);
   mesh.position.copy(centerOf(bbox));
   return mesh;
@@ -98,11 +116,11 @@ function vectorFromPoint(point) {
   return [x, y, z].every(Number.isFinite) ? new THREE.Vector3(x, y, z) : null;
 }
 
-function cylinderBetweenPoints(start, end, radius) {
+function cylinderBetweenPoints(start, end, radius, colorOverride) {
   const axis = new THREE.Vector3().subVectors(end, start);
   const length = axis.length();
   if (!Number.isFinite(length) || length <= 1e-6) return null;
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(radius, 0.001), Math.max(radius, 0.001), length, 16), material(COLORS.native));
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(radius, 0.001), Math.max(radius, 0.001), length, 16), material(colorOverride || COLORS.native));
   mesh.position.copy(start).add(end).multiplyScalar(0.5);
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.normalize());
   return mesh;
@@ -112,13 +130,13 @@ function positive(value) {
   return Number.isFinite(Number(value)) && Number(value) > 0;
 }
 
-function boxObject(entry, primitive) {
+function boxObject(entry, primitive, colorOverride) {
   const params = primitive?.nativeGeometry?.nativeParams || primitive?.nativeParams || primitive?.params || {};
   // RVM native box (code 2): local size + native transform preserves rotation.
   const placement = placementMatrix(primitive);
   const local = boxLocalSize(params, primitive);
-  if (placement && local) return placedMesh(new THREE.BoxGeometry(local[0], local[1], local[2]), placement, COLORS.box);
-  return bboxBox(entry?.bboxWorld ?? entry, false);
+  if (placement && local) return placedMesh(new THREE.BoxGeometry(local[0], local[1], local[2]), placement, colorOverride || COLORS.box);
+  return bboxBox(entry?.bboxWorld ?? entry, false, colorOverride);
 }
 
 function boxLocalSize(params, primitive) {
@@ -129,52 +147,52 @@ function boxLocalSize(params, primitive) {
   return null;
 }
 
-function bboxBox(bbox, wire = false) {
+function bboxBox(bbox, wire = false, colorOverride) {
   if (!isBbox(bbox)) return null;
   const size = bboxSize(bbox);
   const geometry = new THREE.BoxGeometry(Math.max(size[0], 0.001), Math.max(size[1], 0.001), Math.max(size[2], 0.001));
-  const mesh = new THREE.Mesh(geometry, material(COLORS.box, wire));
+  const mesh = new THREE.Mesh(geometry, material(colorOverride || COLORS.box, wire));
   mesh.position.copy(centerOf(bbox));
   return mesh;
 }
 
-function facetProxy(bbox) {
+function facetProxy(bbox, colorOverride) {
   const box = bboxBox(bbox, true);
   if (!box) return null;
-  box.material.color.setHex(COLORS.facet);
+  box.material.color.setHex(colorOverride || COLORS.facet);
   box.scale.y = Math.max(box.scale.y * 0.35, 0.08);
   return box;
 }
 
-function elbowObject(entry, primitive) {
+function elbowObject(entry, primitive, colorOverride) {
   const bbox = entry.bboxWorld;
   const params = primitive?.nativeGeometry?.nativeParams || primitive?.nativeParams || primitive?.params || {};
   const tubeRadius = Number(params.radius);
   const bendRadius = Number(params.bendRadius ?? params.offset);
   const angleRad = positive(params.angleRad) ? Number(params.angleRad) : THREE.MathUtils.degToRad(Number(params.angleDeg || 90));
-  if (!positive(tubeRadius) || !positive(bendRadius)) return bboxWire(bbox, COLORS.diagnostic);
+  if (!positive(tubeRadius) || !positive(bendRadius)) return bboxWire(bbox, colorOverride || COLORS.diagnostic);
   const geometry = new THREE.TorusGeometry(bendRadius, tubeRadius, 16, 40, angleRad);
   // RVM native circular torus (code 4): the arc sits in the local XY plane centred at the ring
   // centre; the native transform places and orients it. Fall back to the world bbox centre otherwise.
   const placement = placementMatrix(primitive);
-  if (placement) return placedMesh(geometry, placement, COLORS.native);
-  if (!isBbox(bbox)) return bboxWire(bbox, COLORS.diagnostic);
-  const mesh = new THREE.Mesh(geometry, material(COLORS.native));
+  if (placement) return placedMesh(geometry, placement, colorOverride || COLORS.native);
+  if (!isBbox(bbox)) return bboxWire(bbox, colorOverride || COLORS.diagnostic);
+  const mesh = new THREE.Mesh(geometry, material(colorOverride || COLORS.native));
   mesh.position.copy(centerOf(bbox));
   return mesh;
 }
 
-function sphereObject(entry, primitive) {
+function sphereObject(entry, primitive, colorOverride) {
   const bbox = entry.bboxWorld;
   if (!isBbox(bbox)) return null;
   const params = primitive?.nativeGeometry?.nativeParams || primitive?.nativeParams || primitive?.params || {};
   const radius = positive(params.radius) ? Number(params.radius) : Math.max(...bboxSize(bbox)) / 2;
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(Math.max(radius, 0.001), 20, 16), material(COLORS.native));
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(Math.max(radius, 0.001), 20, 16), material(colorOverride || COLORS.native));
   mesh.position.copy(centerOf(bbox));
   return mesh;
 }
 
-function flangeObject(entry, primitive) {
+function flangeObject(entry, primitive, colorOverride) {
   const bbox = entry.bboxWorld;
   const params = primitive?.nativeGeometry?.nativeParams || primitive?.nativeParams || primitive?.params || {};
   const radiusBottom = Number(params.radiusBottom);
@@ -184,7 +202,7 @@ function flangeObject(entry, primitive) {
   // when the pipe is diagonal. Falls back to the bbox longest-axis heuristic when endpoints are absent.
   const segment = segmentEndpoints(params);
   if (segment && (positive(radiusBottom) || positive(radiusTop))) {
-    return coneBetweenPoints(segment.start, segment.end, radiusBottom, radiusTop);
+    return coneBetweenPoints(segment.start, segment.end, radiusBottom, radiusTop, colorOverride);
   }
   const height = Number(params.height);
   // RVM native snout/frustum (code 7): build the truncated cone in the local frame (height along
@@ -193,37 +211,37 @@ function flangeObject(entry, primitive) {
   if (placement && positive(height) && (positive(radiusBottom) || positive(radiusTop))) {
     const geometry = new THREE.CylinderGeometry(Math.max(radiusTop, 0.0001), Math.max(radiusBottom, 0.0001), height, 24, 1);
     geometry.rotateX(Math.PI / 2);
-    return placedMesh(geometry, placement, COLORS.native);
+    return placedMesh(geometry, placement, colorOverride || COLORS.native);
   }
-  if (!isBbox(bbox) || !positive(height) || !(positive(radiusBottom) || positive(radiusTop))) return bboxWire(bbox, COLORS.diagnostic);
+  if (!isBbox(bbox) || !positive(height) || !(positive(radiusBottom) || positive(radiusTop))) return bboxWire(bbox, colorOverride || COLORS.diagnostic);
   const size = bboxSize(bbox);
   const axis = longestAxis(size);
   const geometry = new THREE.CylinderGeometry(Math.max(radiusTop, 0.001), Math.max(radiusBottom, 0.001), height, 24, 1);
-  const mesh = new THREE.Mesh(geometry, material(COLORS.native));
+  const mesh = new THREE.Mesh(geometry, material(colorOverride || COLORS.native));
   orientCylinder(mesh, axis);
   mesh.position.copy(centerOf(bbox));
   return mesh;
 }
 
-function coneBetweenPoints(start, end, radiusBottom, radiusTop) {
+function coneBetweenPoints(start, end, radiusBottom, radiusTop, colorOverride) {
   const axis = new THREE.Vector3().subVectors(end, start);
   const length = axis.length();
   if (!Number.isFinite(length) || length <= 1e-6) return null;
   // CylinderGeometry's +Y end takes radiusTop; we orient +Y toward `end`, so radiusTop maps to `end`.
   const geometry = new THREE.CylinderGeometry(Math.max(radiusTop, 0.001), Math.max(radiusBottom, 0.001), length, 24, 1);
-  const mesh = new THREE.Mesh(geometry, material(COLORS.native));
+  const mesh = new THREE.Mesh(geometry, material(colorOverride || COLORS.native));
   mesh.position.copy(start).add(end).multiplyScalar(0.5);
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.normalize());
   return mesh;
 }
 
-function facetGroupObject(entry, primitive) {
+function facetGroupObject(entry, primitive, colorOverride) {
   const params = primitive?.nativeGeometry?.nativeParams || primitive?.nativeParams || primitive?.params || {};
   const facetGroup = params.facetGroup || primitive?.geometry?.facetGroup;
   const transform3x4 = primitive?.transform?.matrix3x4 || primitive?.nativeGeometry?.transform3x4 || primitive?.transform3x4;
   const geometry = facetGroupGeometry(facetGroup, transform3x4);
-  if (!geometry) return facetProxy(entry.bboxWorld);
-  const mesh = new THREE.Mesh(geometry, material(COLORS.box));
+  if (!geometry) return facetProxy(entry.bboxWorld, colorOverride);
+  const mesh = new THREE.Mesh(geometry, material(colorOverride || COLORS.box));
   return mesh;
 }
 
