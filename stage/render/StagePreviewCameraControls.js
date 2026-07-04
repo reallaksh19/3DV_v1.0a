@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 const MIN_RADIUS = 0.05;
-const MAX_RADIUS = 100000;
+const MAX_RADIUS = 1000000;
 const MIN_PITCH = -Math.PI / 2 + 0.05;
 const MAX_PITCH = Math.PI / 2 - 0.05;
 
@@ -38,7 +38,9 @@ export function fitStagePreviewCamera(rendererState, bbox) {
   if (!controls) return;
   const sphere = bboxSphere(bbox);
   controls.target.copy(sphere.target);
-  controls.radius = clamp(sphere.radius * 2.8, MIN_RADIUS, MAX_RADIUS);
+  // Use FOV-aware distance: r / sin(fov/2) gives correct framing for any camera FOV
+  const fovRad = ((rendererState.camera?.fov || controls.rendererState?.camera?.fov || 45) * Math.PI) / 180;
+  controls.radius = clamp(sphere.radius / Math.sin(fovRad / 2), MIN_RADIUS, MAX_RADIUS);
   controls.defaultTarget.copy(controls.target);
   controls.defaultRadius = controls.radius;
   controls.yaw = Math.PI / 4;
@@ -222,16 +224,21 @@ function updateCamera(controls) {
   const y = Math.sin(controls.pitch) * controls.radius;
   const z = Math.cos(controls.pitch) * Math.sin(controls.yaw) * controls.radius;
   
+  // Tighter near/far ratio (20,000:1 vs old 1,000,000:1) reduces Z-fighting significantly.
+  // Combined with logarithmicDepthBuffer in the renderer this is very effective.
+  const near = Math.max(controls.radius / 200, 0.05);
+  const far  = Math.max(controls.radius * 100, 5000);
+
   if (state.perspCamera) {
     state.perspCamera.position.copy(controls.target).add(new THREE.Vector3(x, y, z));
-    state.perspCamera.near = Math.max(controls.radius / 1000, 0.01);
-    state.perspCamera.far = Math.max(controls.radius * 1000, 1000);
+    state.perspCamera.near = near;
+    state.perspCamera.far = far;
     state.perspCamera.lookAt(controls.target);
     state.perspCamera.updateProjectionMatrix();
   } else {
     camera.position.copy(controls.target).add(new THREE.Vector3(x, y, z));
-    camera.near = Math.max(controls.radius / 1000, 0.01);
-    camera.far = Math.max(controls.radius * 1000, 1000);
+    camera.near = near;
+    camera.far = far;
     camera.lookAt(controls.target);
     camera.updateProjectionMatrix();
   }
@@ -243,6 +250,9 @@ function updateCamera(controls) {
     state.orthoCamera.right  =  r * aspect;
     state.orthoCamera.top    =  r;
     state.orthoCamera.bottom = -r;
+    // Dynamically update ortho near/far to match persp — previously hardcoded, causing Z-fighting
+    state.orthoCamera.near = near;
+    state.orthoCamera.far  = far;
     state.orthoCamera.position.copy(state.perspCamera.position);
     state.orthoCamera.quaternion.copy(state.perspCamera.quaternion);
     state.orthoCamera.updateProjectionMatrix();

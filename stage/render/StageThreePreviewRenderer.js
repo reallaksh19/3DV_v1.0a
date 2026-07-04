@@ -58,7 +58,9 @@ export function createStageThreePreviewRenderer(canvasHost) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x020617);
   const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  // logarithmicDepthBuffer eliminates Z-fighting on large industrial models by replacing the
+  // standard 1/z depth distribution with log2, giving near-uniform precision across the full range.
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, logarithmicDepthBuffer: true });
   renderer.domElement.className = 'json-viewer-webgl-canvas';
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 

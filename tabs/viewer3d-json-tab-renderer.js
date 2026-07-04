@@ -31,6 +31,12 @@ const WORKER_URL = new URL('../stage/worker/stage-worker.js', import.meta.url);
 function diagnosticCount(state) { const model = state.model?.diagnostics?.messages?.length || 0; const plan = state.renderPlan?.diagnostics?.length || 0; return model + plan + state.validationErrors.length + state.previewDiagnostics.length + state.workerDiagnostics.length; }
 function defaultSelection(model) { return model ? { type: 'root', id: model.hierarchy?.rootId || 'node-root' } : null; }
 function updateRenderPlan(state) { state.renderPlan = state.model ? buildStageRenderPlan(state.model, state.renderQuality, { qualityOverrides: state.qualityOverrides }) : null; }
+function shouldShowZoneDensitySelector(model) {
+  const nodeCount = model?.hierarchy?.nodes?.length || 0;
+  const componentCount = model?.components?.length || 0;
+  const primitiveCount = model?.primitives?.length || 0;
+  return primitiveCount > 1500 || nodeCount > 50 || componentCount > 10000;
+}
 function activatePanel(panel, handles, state) {
   state.activePanel = panel;
   for (const [name, tab, body] of [
@@ -56,7 +62,19 @@ function handleWorkerMessage(message, handles, state) {
   const payload = message?.payload || {};
   if (message?.type === 'STAGE_WORKER_START' && payload.jobId && payload.jobId !== state.activeJobId) return;
   addWorkerMessageDiagnostic(message, state);
-  state.statusText = message?.type === 'STAGE_WORKER_PROGRESS' ? `${payload.phase || 'worker'}: ${payload.message || ''}` : (message?.type || 'STAGE_WORKER_MESSAGE').replace('STAGE_WORKER_', '');
+  
+  if (message?.type === 'STAGE_WORKER_PROGRESS') {
+    state.statusText = `${payload.phase || 'worker'}: ${payload.message || ''}`;
+    if (handles.progressBar) {
+      handles.progressBar.style.display = '';
+      handles.progressBar.value = payload.percent || 0;
+    }
+  } else {
+    state.statusText = (message?.type || 'STAGE_WORKER_MESSAGE').replace('STAGE_WORKER_', '');
+    if (message?.type === 'STAGE_WORKER_END' || message?.type === 'STAGE_WORKER_ERROR') {
+      if (handles.progressBar) handles.progressBar.style.display = 'none';
+    }
+  }
   updateStatus(handles, state);
 }
 
@@ -174,6 +192,7 @@ function updateStatus(handles, state) {
   handles.nodeText.textContent = `nodes: ${summary.counts.hierarchyNodes}`; handles.componentText.textContent = `components: ${model?.components?.length || 0}`; handles.primitiveText.textContent = `primitives: ${summary.counts.totalPrimitives}`;
   handles.decodedText.textContent = `decoded: ${summary.counts.decodedPrimitives}`; handles.unsupportedText.textContent = `unsupported: ${summary.counts.unsupportedPrimitives}`; handles.failedText.textContent = `failed: ${summary.counts.failedPrimitives}`;
   handles.diagnosticsText.textContent = `diagnostics: ${diagnosticCount(state)}`; handles.qualityText.textContent = `quality: ${state.renderQuality}`; handles.planEntryText.textContent = `plan entries: ${state.renderPlan?.summary?.totalEntries || 0}`; handles.planDiagnosticText.textContent = `render diagnostic: ${state.renderPlan?.summary?.diagnosticOnly || 0}`;
+  if (handles.qualitySelect && handles.qualitySelect.value !== state.renderQuality) handles.qualitySelect.value = state.renderQuality;
   handles.selectedText.textContent = state.selectedRefs?.length > 1 ? `selected: ${state.selectedRefs.length}` : state.selectedRef ? `selected: ${state.selectedRef.type} ${state.selectedRef.id}` : 'selected: none';
   handles.objectsText.textContent = `objects: ${(state.renderPlan?.entries || []).filter((entry) => entry.output !== 'hidden').length}`;
   const stats = state.visibilityStats || visibilityStats(state.previewRenderer);
@@ -186,7 +205,7 @@ function updateStatus(handles, state) {
 
 function acceptModel(model, sourceName, state, statusText = `Loaded ${sourceName}`) {
   const validation = validateRvmStageModel(model); state.sourceFileName = sourceName; state.previewDiagnostics = []; state.previewFitPending = true;
-  if (!validation.valid) return rejectModel(validation.errors, state); state.model = model; state.selectedRef = defaultSelection(model); state.selectedRefs = state.selectedRef ? [state.selectedRef] : []; state.validationErrors = []; state.activePanel = 'properties'; state.statusText = statusText; updateRenderPlan(state); 
+  if (!validation.valid) return rejectModel(validation.errors, state); state.model = model; state.selectedRef = defaultSelection(model); state.selectedRefs = state.selectedRef ? [state.selectedRef] : []; state.validationErrors = []; state.activePanel = 'properties'; state.statusText = statusText; 
   import('../stage/render/StagePreviewObjectSearch.js').then(m => { state.searchIndex = m.buildJsonSearchIndex(model); });
   return true;
 }
@@ -222,10 +241,23 @@ function selectedLabel(ref) { return `Selected ${ref.type} ${ref.id}`; }
 function uniqueRefs(refs) { const out = new Map(); for (const ref of refs) out.set(`${ref.type}:${ref.id}`, { type: ref.type, id: ref.id }); return Array.from(out.values()); }
 function toggleSelectionRef(selectedRefs, ref) { const key = `${ref.type}:${ref.id}`; const next = new Map((selectedRefs || []).map((item) => [`${item.type}:${item.id}`, item])); next.has(key) ? next.delete(key) : next.set(key, { type: ref.type, id: ref.id }); return Array.from(next.values()); }
 
-function applyWorkerResult(result, sourceName, handles, state, mode = 'stage-json') {
+async function applyWorkerResult(result, sourceName, handles, state, mode = 'stage-json') {
   appendWorkerMessages(result, state); if (!result?.ok) return applyWorkerFailure(result, handles, state, mode);
   const handoff = mode === 'rvm-binary' ? classifyRvmWorkerResult(result) : null; const accepted = acceptModel(result.stageModel, sourceName, state, handoff?.statusText || 'Worker accepted Stage JSON');
-  const planCheck = validateStageRenderPlan(result.renderPlan); if (accepted && planCheck.valid && result.renderPlan?.source?.quality === state.renderQuality) state.renderPlan = result.renderPlan;
+  
+  if (accepted && !state.renderPlan && state.model && shouldShowZoneDensitySelector(state.model)) {
+    const { showJsonViewerZoneDensitySelector } = await import('../stage/ui/JsonViewerZoneDensitySelector.js');
+    const jobId = state.activeJobId;
+    const selection = await showJsonViewerZoneDensitySelector(state.model, { defaultQuality: state.renderQuality, outsideQuality: 'light', selectedQuality: 'full' });
+    if (state.activeJobId !== jobId) return;
+    state.renderQuality = selection?.quality || state.renderQuality;
+    state.qualityOverrides = selection?.qualityOverrides || {};
+    state.zoneDensitySelection = selection?.selection || null;
+  }
+  
+  updateRenderPlan(state);
+
+  const planCheck = validateStageRenderPlan(state.renderPlan || result.renderPlan); if (accepted && planCheck.valid && result.renderPlan?.source?.quality === state.renderQuality) state.renderPlan = result.renderPlan;
   if (!planCheck.valid) state.workerDiagnostics.push({ severity: 'warning', code: 'STAGE_WORKER_RENDER_PLAN_FALLBACK', message: planCheck.errors.join('; ') }); if (handoff) state.workerDiagnostics.push(...createRvmUiDiagnostics(result)); renderAll(handles, state);
 }
 function applyWorkerFailure(result, handles, state, mode = 'stage-json') { appendWorkerMessages(result, state); clearLoadedModel(state, state.sourceFileName); state.validationErrors = result?.validationErrors || []; state.workerDiagnostics.push({ severity: 'error', code: result?.error?.code || 'STAGE_WORKER_FAILED', message: result?.error?.message || 'Stage worker failed' }); appendRvmDiagnostics(result, state, mode); state.activePanel = 'diagnostics'; state.statusText = mode === 'rvm-binary' ? classifyRvmWorkerResult(result).statusText : 'Worker rejected Stage JSON'; renderAll(handles, state); }
@@ -240,7 +272,7 @@ function runPreviewCommand(action, handles, state) {
   updateStatus(handles, state); 
 }
 function restoreHistory(direction, handles, state) { const ok = direction === 'undo' ? undoJsonViewerState(state) : redoJsonViewerState(state); if (!ok) { state.statusText = `${direction}: no command`; return updateStatus(handles, state); } if (state.previewRenderer) { state.previewRenderer.selectedRef = state.selectedRef; state.previewRenderer.selectedRefs = state.selectedRefs || []; updateStagePreviewSelection(state.previewRenderer, state.model); syncPreviewTools(state.previewRenderer, state); } state.statusText = `${direction}: restored`; renderSidePanels(handles, state); }
-function loadSample(handles, state) { try { resetToolState(state); state.workerDiagnostics = []; state.workerDiagnosticKeys = new Set(); state.activeJobId = ''; acceptModel(createSampleRvmStageModelV1(), SAMPLE_SOURCE_NAME, state); } catch (error) { clearLoadedModel(state, SAMPLE_SOURCE_NAME); state.validationErrors = [`Sample load failed: ${error?.message || error}`]; state.activePanel = 'diagnostics'; state.statusText = 'Sample load failed'; } renderAll(handles, state); }
+function loadSample(handles, state) { try { resetToolState(state); state.workerDiagnostics = []; state.workerDiagnosticKeys = new Set(); state.activeJobId = ''; acceptModel(createSampleRvmStageModelV1(), SAMPLE_SOURCE_NAME, state); updateRenderPlan(state); } catch (error) { clearLoadedModel(state, SAMPLE_SOURCE_NAME); state.validationErrors = [`Sample load failed: ${error?.message || error}`]; state.activePanel = 'diagnostics'; state.statusText = 'Sample load failed'; } renderAll(handles, state); }
 async function loadStageFile(file, handles, state) { resetForWorkerFile(state, file.name, `reading-file: ${file.name}`); renderAll(handles, state); const text = await file.text(); const fileHash = await hashStageJsonText(file, text); const job = createStageJsonWorkerJob({ text, fileName: file.name, fileSize: file.size, fileHash }); await runWorkerJob(job, handles, state, (result) => applyWorkerResult(result, file.name, handles, state)); handles.fileInput.value = ''; }
 async function loadRvmFile(file, handles, state) { resetForWorkerFile(state, file.name, `RVM binary selected: ${file.name}`); renderAll(handles, state); const arrayBuffer = await file.arrayBuffer(); const fileHash = await hashArrayBuffer(file, arrayBuffer, 'rvm-binary'); const job = createRvmBinaryWorkerJob({ arrayBuffer, fileName: file.name, fileSize: file.size, fileHash }); await runWorkerJob(job, handles, state, (result) => applyWorkerResult(result, file.name, handles, state, 'rvm-binary')); handles.rvmFileInput.value = ''; }
 function loadQueryArtifact(handles, state) {
@@ -274,7 +306,7 @@ function loadQueryArtifact(handles, state) {
 }
 function resetForWorkerFile(state, fileName, statusText) { disposeWorkerClient(state); resetToolState(state); clearLoadedModel(state, fileName); state.workerDiagnostics = []; state.workerDiagnosticKeys = new Set(); state.activePanel = 'diagnostics'; state.statusText = statusText; }
 function resetToolState(state) { state.visibility = createStageVisibilityState(); state.clip = createStageClipState(); state.clipResult = null; state.visibilityStats = { total: 0, visible: 0, hidden: 0 }; state.tags = []; state.tagDraft = null; state.tagCapture = { active: false, anchor: null }; state.componentFilter = 'all'; state.boxSelectActive = false; state.marqueeActive = false; state.measureActive = false; }
-async function runWorkerJob(job, handles, state, applyResult) { state.activeJobId = job.jobId; try { const result = await runStageWorkerClientJob(ensureWorkerClient(handles, state), job); if (state.activeJobId === job.jobId) applyResult(result); } catch (error) { if (state.activeJobId === job.jobId) applyWorkerFailure({ error: { code: 'STAGE_WORKER_CLIENT_ERROR', message: error?.message || String(error) } }, handles, state, job.kind); } }
+async function runWorkerJob(job, handles, state, applyResult) { state.activeJobId = job.jobId; try { const result = await runStageWorkerClientJob(ensureWorkerClient(handles, state), job); if (state.activeJobId === job.jobId) await applyResult(result); } catch (error) { if (state.activeJobId === job.jobId) applyWorkerFailure({ error: { code: 'STAGE_WORKER_CLIENT_ERROR', message: error?.message || String(error) } }, handles, state, job.kind); } }
 async function hashStageJsonText(file, text) { return hashBytes(file, new TextEncoder().encode(text), 'stage-json'); }
 async function hashArrayBuffer(file, arrayBuffer, kind) { return hashBytes(file, new Uint8Array(arrayBuffer), kind); }
 async function hashBytes(file, bytes, kind) { const cryptoApi = globalThis.crypto?.subtle; if (!cryptoApi) return `sha256-${kind}-${file.name}-${file.size}-${bytes.byteLength}`; const digest = await cryptoApi.digest('SHA-256', bytes); return `sha256-${Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')}`; }
@@ -335,7 +367,7 @@ function applyViewPreset(action, handles, state) {
 
 export function renderViewer3DJson(root) {
   const handles = createJsonViewerShell(root);
-  const state = { model: null, renderPlan: null, previewRenderer: null, workerClient: null, previewDiagnostics: [], workerDiagnostics: [], workerDiagnosticKeys: new Set(), previewFitPending: false, activeJobId: '', sourceFileName: '', selectedRef: null, selectedRefs: [], validationErrors: [], renderQuality: 'full', qualityOverrides: {}, activePanel: 'properties', statusText: 'Ready', activeTool: 'select', marqueeActive: false, measureActive: false, boxSelectActive: false, projectionMode: 'perspective', searchIndex: [], history: createJsonViewerHistory(), enrichment: createJsonViewerEnrichmentState() };
+  const state = { model: null, renderPlan: null, previewRenderer: null, workerClient: null, previewDiagnostics: [], workerDiagnostics: [], workerDiagnosticKeys: new Set(), previewFitPending: false, activeJobId: '', sourceFileName: '', selectedRef: null, selectedRefs: [], validationErrors: [], renderQuality: 'full', qualityOverrides: {}, zoneDensitySelection: null, activePanel: 'properties', statusText: 'Ready', activeTool: 'select', marqueeActive: false, measureActive: false, boxSelectActive: false, projectionMode: 'perspective', searchIndex: [], history: createJsonViewerHistory(), enrichment: createJsonViewerEnrichmentState() };
   resetToolState(state);
   const api = {
     renderSidePanels: () => renderSidePanels(handles, state),

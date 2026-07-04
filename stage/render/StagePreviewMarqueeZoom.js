@@ -86,6 +86,7 @@ function collectBoxInRect(rendererState, rect) {
 function boxProjectsIntoRect(box3, camera, canvasBounds, rect) {
   return boxCorners(box3)
     .map((corner) => projectToScreen(corner, camera, canvasBounds))
+    .filter(Boolean)  // filter out behind-camera points (null)
     .some((point) => point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom);
 }
 
@@ -101,6 +102,8 @@ function boxCorners(box3) {
 
 function projectToScreen(point, camera, canvasBounds) {
   const projected = point.clone().project(camera);
+  // Reject points behind the camera — z outside [-1, 1] in NDC means behind near/far plane
+  if (projected.z < -1 || projected.z > 1) return null;
   return {
     x: canvasBounds.left + (projected.x * 0.5 + 0.5) * canvasBounds.width,
     y: canvasBounds.top + (1 - (projected.y * 0.5 + 0.5)) * canvasBounds.height,

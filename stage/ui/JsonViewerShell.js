@@ -218,8 +218,6 @@ export function createJsonViewerShell(root) {
   const viewCubeBar = buildViewCubeBar();
   canvasHost.appendChild(viewCubeBar);
 
-  centerPanel.append(canvasHost);
-
   const rightPanel = el('aside', 'json-viewer-right-panel', '');
   const tabs = el('div', 'json-viewer-right-tabs', '');
   const propertiesTab = button('json-viewer-right-tab is-active', 'Properties', 'right-properties'); propertiesTab.dataset.panel = 'properties';
@@ -250,15 +248,20 @@ export function createJsonViewerShell(root) {
   evidencePanel.append(summaryPanel, coveragePanel); evidenceDetails.append(evidenceSummaryToggle, evidencePanel);
 
   const status = el('footer', 'json-viewer-status-strip', '');
+  const progressBar = document.createElement('progress');
+  progressBar.className = 'json-viewer-progress-bar';
+  progressBar.max = 100;
+  progressBar.value = 0;
+  progressBar.style.display = 'none';
   const statusText = el('span', 'json-viewer-status-text', 'Ready');
   const selectedText = statusChip('selected: none'), objectsText = statusChip('objects: 0'), visibleText = statusChip('visible: 0'), hiddenText = statusChip('hidden: 0'), clipText = statusChip('clip: off'), tagText = statusChip('tags: 0'), coordText = statusChip('XYZ: -'), unitsText = statusChip('units: mm');
   const schemaText = statusChip(''), sourceText = statusChip(''), nodeText = statusChip(''), componentText = statusChip(''), primitiveText = statusChip('');
   const decodedText = statusChip(''), unsupportedText = statusChip(''), failedText = statusChip(''), diagnosticsText = statusChip(''), qualityText = statusChip(''), planEntryText = statusChip(''), planDiagnosticText = statusChip('');
-  status.append(statusText, selectedText, objectsText, visibleText, hiddenText, clipText, tagText, coordText, unitsText);
+  status.append(progressBar, statusText, selectedText, objectsText, visibleText, hiddenText, clipText, tagText, coordText, unitsText);
   summaryPanel.append(schemaText, sourceText, nodeText, componentText, primitiveText, decodedText, unsupportedText, failedText, diagnosticsText, qualityText, planEntryText, planDiagnosticText);
   shell.append(toolbar, navRow, body, enrichmentPanel, evidenceDetails, status); root.replaceChildren(shell);
 
-  return { shell, toolbar, navRow, body, leftPanel, rightPanel, fileInput, rvmFileInput, tagFileInput, downloadButton, qualitySelect, colorBySelect, diagnosticsButton, hierarchyList, treeFilterInput, hiddenList, summaryPanel, coveragePanel, canvasHost, canvasMessage, axisHud, axisCanvas, updateAxisHud: makeAxisHudUpdater(axisCanvas), bottomDrawer, bottomDrawerContent, enrichmentPanel, propertiesTab, engDataTab, tagsTab, clipTab, diagnosticsTab, propertiesPanel, engDataPanel, tagsPanel, clipPanel, diagnosticsPanel, statusText, schemaText, sourceText, nodeText, primitiveText, decodedText, unsupportedText, failedText, componentText, diagnosticsText, qualityText, planEntryText, planDiagnosticText, selectToolButton, boxSelectButton, orbitToolButton, panToolButton, undoButton, redoButton, viewPrevButton, viewNextButton, explodeAxisGroup, explodeSlider, explodeResetBtn, fitButton, fitSelectionButton, isoViewButton, topViewButton, frontViewButton, sideViewButton, orthoToggleButton, searchOpenButton, searchReindexButton, hideButton, unhideButton, showAllButton, isolateButton, clipSelectionButton, clipModelButton, clipPlaneButton, clipClearButton, tagCreateButton, tagViewButton, tagHideAllButton, tagShowAllButton, tagImportButton, tagExportButton, enrichButton, exportModelButton, exportSelectionButton, exportSnapshotButton, marqueeZoomButton, measureToolButton, measureReadout, selectedText, objectsText, visibleText, hiddenText, clipText, tagText, coordText, unitsText, qualityOverrideSelect, applyQualityButton };
+  return { shell, toolbar, navRow, body, leftPanel, rightPanel, fileInput, rvmFileInput, tagFileInput, downloadButton, qualitySelect, colorBySelect, diagnosticsButton, hierarchyList, treeFilterInput, hiddenList, summaryPanel, coveragePanel, canvasHost, canvasMessage, axisHud, axisCanvas, updateAxisHud: makeAxisHudUpdater(axisCanvas), bottomDrawer, bottomDrawerContent, enrichmentPanel, propertiesTab, engDataTab, tagsTab, clipTab, diagnosticsTab, propertiesPanel, engDataPanel, tagsPanel, clipPanel, diagnosticsPanel, progressBar, statusText, schemaText, sourceText, nodeText, primitiveText, decodedText, unsupportedText, failedText, componentText, diagnosticsText, qualityText, planEntryText, planDiagnosticText, selectToolButton, boxSelectButton, orbitToolButton, panToolButton, undoButton, redoButton, viewPrevButton, viewNextButton, explodeAxisGroup, explodeSlider, explodeResetBtn, fitButton, fitSelectionButton, isoViewButton, topViewButton, frontViewButton, sideViewButton, orthoToggleButton, searchOpenButton, searchReindexButton, hideButton, unhideButton, showAllButton, isolateButton, clipSelectionButton, clipModelButton, clipPlaneButton, clipClearButton, tagCreateButton, tagViewButton, tagHideAllButton, tagShowAllButton, tagImportButton, tagExportButton, enrichButton, exportModelButton, exportSelectionButton, exportSnapshotButton, marqueeZoomButton, measureToolButton, measureReadout, selectedText, objectsText, visibleText, hiddenText, clipText, tagText, coordText, unitsText, qualityOverrideSelect, applyQualityButton };
 }
 
 const VIEW_CUBE_DEFS = [

@@ -70,11 +70,11 @@ function buildPlan(model, quality, options) {
   const normalizedQuality = normalizeRenderQuality(quality);
   const diagnostics = [...options.diagnostics];
   const overrides = options.qualityOverrides || {};
-  const getQuality = (nodeId, componentId) => overrides[`component:${componentId}`] || overrides[`node:${nodeId}`] || normalizedQuality;
+  const qualityResolver = createQualityOverrideResolver(model, overrides, normalizedQuality);
   const componentById = new Map((model?.components || []).map((component) => [component.id, component]));
-  const entries = (model?.primitives || []).map((primitive, index) => buildPrimitiveEntry(primitive, componentById.get(primitive.componentId), getQuality(primitive.nodeId, primitive.componentId), index, diagnostics));
-  if (options.components) entries.push(...buildComponentEntries(model, quality, entries.length, overrides));
-  if (options.assemblies) entries.push(...buildAssemblyEntries(model, quality, entries.length, overrides));
+  const entries = (model?.primitives || []).map((primitive, index) => buildPrimitiveEntry(primitive, componentById.get(primitive.componentId), qualityResolver.primitive(primitive), index, diagnostics));
+  if (options.components) entries.push(...buildComponentEntries(model, entries.length, qualityResolver));
+  if (options.assemblies) entries.push(...buildAssemblyEntries(model, entries.length, qualityResolver));
   const plan = { schema: STAGE_RENDER_PLAN_SCHEMA, source: planSource(model, normalizedQuality), entries, summary: null, diagnostics };
   plan.summary = summarizeStageRenderPlan(plan);
   return plan;
@@ -91,22 +91,49 @@ function buildPrimitiveEntry(primitive, component, quality, index, diagnostics) 
   });
 }
 
-function buildComponentEntries(model, quality, offset, overrides = {}) {
+function buildComponentEntries(model, offset, qualityResolver) {
   return (model?.components || []).map((component, index) => {
     const renderKind = COMPONENT_KIND_BY_SEMANTIC[component?.semanticType];
     if (!renderKind) return null;
-    const q = overrides[`component:${component.id}`] || overrides[`node:${component.nodeId}`] || quality;
+    const q = qualityResolver.component(component);
     const classified = classifyStageRenderSupport({ component, renderKind, quality: q });
     return createComponentRenderPlanEntry({ id: renderId(offset + index + 1), sourceRef: { type: 'component', id: component.id }, nodeId: component.nodeId || '', componentId: component.id, primitiveId: '', renderKind, semanticType: component.semanticType || 'UNKNOWN', recipeId: `component-${renderKind.toLowerCase().replaceAll('_', '-')}-diagnostic`, bboxWorld: component.bboxWorld || null, ...classified });
   }).filter(Boolean);
 }
 
-function buildAssemblyEntries(model, quality, offset, overrides = {}) {
+function buildAssemblyEntries(model, offset, qualityResolver) {
   return (model?.assemblies || []).map((assembly, index) => {
     const renderKind = assembly.renderKind || 'UNKNOWN_DIAGNOSTIC';
-    const q = overrides[`node:${assembly.nodeId}`] || quality;
+    const q = qualityResolver.node(assembly.nodeId);
     return createAssemblyRenderPlanEntry({ id: renderId(offset + index + 1), sourceRef: { type: 'assembly', id: assembly.id }, nodeId: assembly.nodeId || '', componentId: '', primitiveId: '', renderKind, semanticType: assembly.semanticType || 'UNKNOWN', recipeId: `assembly-${renderKind.toLowerCase()}-diagnostic`, bboxWorld: assembly.bboxWorld || null, ...classifyStageRenderSupport({ ...assembly, renderKind, quality: q }) });
   });
+}
+
+function createQualityOverrideResolver(model, overrides, fallbackQuality) {
+  const parentByNodeId = new Map((model?.hierarchy?.nodes || []).filter((node) => node?.id).map((node) => [node.id, node.parentId || '']));
+  const qualityForKeys = (keys) => {
+    for (const key of keys) {
+      const value = overrides[key];
+      if (value) return normalizeRenderQuality(value);
+    }
+    return fallbackQuality;
+  };
+  const nodeKeys = (nodeId) => {
+    const keys = [];
+    let current = nodeId || '';
+    const seen = new Set();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      keys.push(`node:${current}`, current);
+      current = parentByNodeId.get(current) || '';
+    }
+    return keys;
+  };
+  return {
+    primitive: (primitive) => qualityForKeys([`primitive:${primitive?.id || ''}`, primitive?.id || '', `component:${primitive?.componentId || ''}`, primitive?.componentId || '', ...nodeKeys(primitive?.nodeId)]),
+    component: (component) => qualityForKeys([`component:${component?.id || ''}`, component?.id || '', ...nodeKeys(component?.nodeId)]),
+    node: (nodeId) => qualityForKeys(nodeKeys(nodeId)),
+  };
 }
 
 function createEntry(entryKind, options) {
